@@ -1,0 +1,34 @@
+name: Sincronizar banco de materiais
+
+# Quando você altera dados/montar_banco.py, este workflow regenera o JSON, o CSV e a entidade Room,
+# valida e commita o resultado no próprio repositório. Assim os arquivos gerados nunca ficam desatualizados.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "dados/montar_banco.py"
+      - "dados/gerar_entidade.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sincronizar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python dados/montar_banco.py
+      - run: python dados/validar_dados.py
+      - run: python dados/gerar_entidade.py
+      - name: Commitar arquivos gerados
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "dados: regenera banco de materiais, CSV e entidade Room"
+          file_pattern: >-
+            app/src/main/assets/materiais.json
+            dados/saida/materiais.csv
+            app/src/main/java/com/willian/injecao/data/MaterialEntity.kt
