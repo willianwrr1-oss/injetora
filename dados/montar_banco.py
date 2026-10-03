@@ -1,0 +1,594 @@
+#!/usr/bin/env python3
+"""
+Monta o banco de materiais (JSON para o app e CSV para conferência) a partir dos registros abaixo.
+
+Cada registro vem de um datasheet público e traz fonte (fonte_url, fonte_tipo), data da consulta e
+observações. Campo ausente = não encontrado em fonte aberta; nunca é preenchido com valor genérico.
+
+Uso (a partir da raiz do repositório):
+    python dados/montar_banco.py
+    python dados/montar_banco.py --json app/src/main/assets/materiais.json --csv dados/saida/materiais.csv
+
+Para acrescentar um material: copie um bloco add(...) abaixo, preencha com os dados do datasheet e
+rode os scripts de validação. O hash do conteúdo vira a versão do banco, então o app reimporta sozinho.
+"""
+import argparse
+import csv
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+
+DATA_CONSULTA = "2026-10-03"
+
+# Campos: None = faltante (não encontrado em fonte aberta)
+M = []
+
+def add(**k):
+    M.append(k)
+
+add(id="POM-CELANESE-CELCON-M90", familia="POM", fabricante="Celanese", grade="Celcon M90", carga=None,
+    densidade_g_cm3=1.41, mfr_g_10min=None, mvr_cm3_10min=8.0, mvr_condicao="190°C/2.16 kg",
+    temp_fusao_c=166, temp_fundido_min_c=180, temp_fundido_max_c=190, temp_fundido_rec_c=None,
+    temp_molde_min_c=80, temp_molde_max_c=120, temp_molde_rec_c=None,
+    secagem_temp_min_c=100, secagem_temp_max_c=120, secagem_tempo_min_h=3.0, secagem_tempo_max_h=4.0, umidade_max_pct=None,
+    zona_traseira_min_c=170, zona_traseira_max_c=180, zona_media_min_c=180, zona_media_max_c=190,
+    zona_frontal_min_c=180, zona_frontal_max_c=190, bico_min_c=190, bico_max_c=200,
+    contra_pressao_max_mpa=4.0, velocidade_injecao="Lenta a moderada",
+    contracao_paralela_pct=2.0, contracao_normal_pct=1.9,
+    hdt_1_8mpa_c=101, hdt_0_45mpa_c=158,
+    densidade_fundido_g_cm3=1.20, calor_especifico_fundido_j_kg_c=2210, condutividade_fundido_w_m_k=0.16,
+    temp_extracao_c=140, temp_fluxo_c=174,
+    fonte_url="https://quickparts.com/wp-content/uploads/2024/05/Celcon-M90-Acetal.pdf",
+    fonte_tipo="Datasheet UL Prospector (Celanese, atualizado 09/01/2023)",
+    observacoes="Contração ISO 294-4. Versão antiga do datasheet (protolabs.com) indica fundido 180-200°C e secagem 80-100°C/3 h. Guia de processamento Celanese (via Material Data Center) indica fundido preferencial 182-199°C, molde 82-93°C (até 120°C), máx. 230°C no fundido, e que secagem geralmente não é exigida para copolímero.")
+
+add(id="POM-POLYPLASTICS-DURACON-M90-44", familia="POM", fabricante="Polyplastics", grade="Duracon M90-44", carga=None,
+    densidade_g_cm3=1.41, mfr_g_10min=9.0, mvr_cm3_10min=None, mvr_condicao="190°C/2.16 kg",
+    fonte_url="https://ultrapolymers.com/en/products/101518-duracon-m90-44",
+    fonte_tipo="Página de distribuidor (Ultrapolymers)",
+    observacoes="Somente densidade e MFR encontrados em fonte aberta. Datasheet completo e condições de moldagem estão no UL Prospector (exige cadastro gratuito). Registro marcado como incompleto.")
+
+add(id="PA66-BASF-ULTRAMID-A3K", familia="PA66", fabricante="BASF", grade="Ultramid A3K", carga=None,
+    densidade_g_cm3=1.13, mvr_cm3_10min=120, mvr_condicao="275°C/5 kg",
+    temp_fusao_c=260, temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=290,
+    temp_molde_min_c=60, temp_molde_max_c=80, temp_molde_rec_c=60,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=4, secagem_tempo_max_h=4,
+    contracao_paralela_pct=1.50, contracao_normal_pct=1.80,
+    fonte_url="https://download.basf.com/p1/8a8082587fd4b608017fd64108ab6d3b/en/ULTRAMID_A3K_Product_Data_Sheet_Asia_PacificEurope_English.pdf",
+    fonte_tipo="Product Information BASF (02/2026) + Material Data Center (MVR, secagem, recomendados)",
+    observacoes="Contração restrita (constrained) 0,95%. Contração ISO 294-4 para estado seco.")
+
+add(id="PA66-GF30-BASF-ULTRAMID-A3WG6-LT-BK", familia="PA66", fabricante="BASF", grade="Ultramid A3WG6 LT BK", carga="GF30",
+    densidade_g_cm3=1.366, secagem_tempo_min_h=4, secagem_tempo_max_h=4,
+    temp_fusao_c=260, temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=290,
+    temp_molde_min_c=80, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80,
+    contracao_paralela_pct=0.45, contracao_normal_pct=1.09,
+    fonte_url="https://download.basf.com/p1/8a8082587fd4b608017fd65c882559b5/en/ULTRAMID%253Csup%253E%25C2%25AE%253Csup%253E_A3WG6_LT_BLACK",
+    fonte_tipo="Product Information BASF (02/2026)",
+    observacoes="Variante LT preta (estabilizada). Não encontrei o datasheet do A3WG6 natural padrão; usar com cautela como referência de PA66-GF30.")
+
+add(id="PA66-GF30-BASF-ULTRAMID-A3HG6-HR-BK23591", familia="PA66", fabricante="BASF", grade="Ultramid A3HG6 HR BK23591", carga="GF30",
+    densidade_g_cm3=1.37, mvr_cm3_10min=20, mvr_condicao="275°C/5 kg",
+    temp_fusao_c=None, temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=290,
+    temp_molde_min_c=80, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=4, secagem_tempo_max_h=4,
+    zona_traseira_min_c=290, zona_traseira_max_c=290, zona_media_min_c=290, zona_media_max_c=290,
+    zona_frontal_min_c=290, zona_frontal_max_c=290, bico_min_c=290, bico_max_c=290,
+    contracao_paralela_pct=0.47, contracao_normal_pct=1.15,
+    fonte_url="https://download.basf.com/p1/8a8081c57fd4b609017fd66089ce38ec/en/Ultramid%25C2%25AE_A3HG6_HR_BLACK_23591",
+    fonte_tipo="Processing Data Sheet BASF (02/2026)",
+    observacoes="Grau resistente à hidrólise (HR). Temperatura da garganta do funil 80°C. Contração restrita longitudinal 0,55% (Tm 290°C, Tw 80°C). Excesso de secagem pode aumentar a viscosidade do fundido (nota do fabricante).")
+
+add(id="PA66-GF35-BASF-ULTRAMID-A3WG7", familia="PA66", fabricante="BASF", grade="Ultramid A3WG7", carga="GF35",
+    temp_fusao_c=260, temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=290,
+    temp_molde_min_c=80, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80,
+    contracao_paralela_pct=0.37, contracao_normal_pct=1.04,
+    fonte_url="https://download.basf.com/p1/8a8082587fd4b608017fd647e3923a71/en/ULTRAMID%25C2%25AE_A3WG7",
+    fonte_tipo="Product Information BASF (02/2026) + Material Data Center",
+    observacoes="Contração restrita 0,5%. Densidade, MVR e tempo de secagem não constavam no trecho consultado.")
+
+add(id="PA6-BASF-ULTRAMID-B3K", familia="PA6", fabricante="BASF", grade="Ultramid B3K", carga=None,
+    densidade_g_cm3=1.13, mvr_cm3_10min=160, mvr_condicao="275°C/5 kg",
+    temp_fundido_min_c=250, temp_fundido_max_c=270, temp_fundido_rec_c=260,
+    temp_molde_min_c=40, temp_molde_max_c=60, temp_molde_rec_c=60,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=4, secagem_tempo_max_h=4,
+    contracao_paralela_pct=0.8, contracao_normal_pct=0.8, temp_extracao_c=145,
+    fonte_url="https://materialdatacenter.com/ms/en/Ultramid B/BASF+SE/Ultramid%C2%AE+B3K/3a22f000/4337",
+    fonte_tipo="Material Data Center (dados BASF)",
+    observacoes="Para comparação: o Ultramid B3S R03 (outro grade PA6) traz 250-270°C de fundido, molde 40-60°C, contração 0,85% paralela e 1,0% normal, e Tm 220°C.")
+
+add(id="PA6-GF30-BASF-ULTRAMID-B3EG6-LS-BK23189", familia="PA6", fabricante="BASF", grade="Ultramid B3EG6 LS BK23189", carga="GF30",
+    densidade_g_cm3=1.36, mvr_cm3_10min=35, mvr_condicao="275°C/5 kg",
+    temp_fusao_c=220, temp_fundido_min_c=270, temp_fundido_max_c=290, temp_fundido_rec_c=280,
+    temp_molde_min_c=80, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=4, secagem_tempo_max_h=4,
+    contracao_paralela_pct=0.25, contracao_normal_pct=0.80,
+    fonte_url="https://download.basf.com/p1/8a8081c57fd4b609017fd663f10a3cb2/en/ULTRAMID%25C2%25AE_B3EG6_LS_BLACK_23189",
+    fonte_tipo="Product Information BASF (02/2026) + Material Data Center",
+    observacoes="Variante marcável a laser (LS). Para PA6-GF30 padrão, o B3WG6 HSP BK23210 traz fundido 260-290°C, molde 80-90°C, densidade 1,35 g/cm³, contração 0,29/0,72%.")
+
+add(id="PBT-BASF-ULTRADUR-B4500", familia="PBT", fabricante="BASF", grade="Ultradur B 4500", carga=None,
+    densidade_g_cm3=1.30, mvr_cm3_10min=19, mvr_condicao="250°C/2.16 kg",
+    temp_fusao_c=223, temp_fundido_min_c=250, temp_fundido_max_c=275, temp_fundido_rec_c=260,
+    temp_molde_min_c=40, temp_molde_max_c=70, temp_molde_rec_c=60,
+    secagem_temp_min_c=80, secagem_temp_max_c=120, umidade_max_pct=0.04,
+    contracao_paralela_pct=1.60, contracao_normal_pct=1.90,
+    fonte_url="https://download.basf.com/p1/8a8081c57fd4b609017fd66449853d71/en/ULTRADUR%25C2%25AE_B4500",
+    fonte_tipo="Product Information BASF (02/2026)",
+    observacoes="Valores recomendados (260°C / 60°C) e faixa de secagem vêm da variante B 4500 FC no Material Data Center. Umidade máxima no processamento: 0,04%.")
+
+add(id="PBT-GF30-BASF-ULTRADUR-B4300G6-HR", familia="PBT", fabricante="BASF", grade="Ultradur B 4300 G6 HR", carga="GF30",
+    densidade_g_cm3=1.51, mvr_cm3_10min=5.5, mvr_condicao="250°C/2.16 kg",
+    temp_fusao_c=223, temp_fundido_min_c=250, temp_fundido_max_c=275, temp_fundido_rec_c=260,
+    temp_molde_min_c=60, temp_molde_max_c=100, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=120, umidade_max_pct=0.04,
+    zona_traseira_min_c=250, zona_traseira_max_c=250, zona_media_min_c=255, zona_media_max_c=255,
+    bico_min_c=260, bico_max_c=260,
+    contracao_paralela_pct=0.50, contracao_normal_pct=1.30,
+    fonte_url="https://download.basf.com/p1/8a8082587fd4b608017fd651a5df0be7/en/ULTRADUR%25C2%25AE_B4300_G6_HR",
+    fonte_tipo="Processing Data Sheet BASF (02/2026) + Material Data Center",
+    observacoes="Grau HR (resistente à hidrólise). Temperatura da garganta do funil 80°C. Evitar tempos de residência longos e temperaturas altas (degradação molecular).")
+
+add(id="ABS-INEOS-TERLURAN-GP-22", familia="ABS", fabricante="INEOS Styrolution", grade="Terluran GP-22", carga=None,
+    densidade_g_cm3=1.04, mvr_cm3_10min=19, mvr_condicao="220°C/10 kg",
+    temp_fundido_min_c=220, temp_fundido_max_c=260,
+    temp_molde_min_c=30, temp_molde_max_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4,
+    contracao_faixa_min_pct=0.4, contracao_faixa_max_pct=0.7,
+    hdt_1_8mpa_c=94, hdt_0_45mpa_c=99,
+    fonte_url="https://www.ineos-styrolution.com/Product/Terluran_Terluran-GP-22_SKU300600120827.html",
+    fonte_tipo="Datasheet do fabricante (INEOS Styrolution)",
+    observacoes="Contração informada como faixa única 0,4-0,7% (livre, longitudinal); gravada nos campos de faixa, sem separar paralela/normal. HDT com corpo recozido (4 h/80°C). Vicat B/50 96°C. Umidade de equilíbrio 0,22% (23°C/50% UR). Datasheet BASF antigo (2005) listava molde 30-60°C.")
+
+add(id="PC-COVESTRO-MAKROLON-2407", familia="PC", fabricante="Covestro", grade="Makrolon 2407", carga=None,
+    densidade_g_cm3=1.20, mfr_g_10min=20, mvr_cm3_10min=19, mvr_condicao="300°C/1.2 kg",
+    temp_fundido_min_c=280, temp_fundido_max_c=320, temp_fundido_rec_c=300,
+    temp_molde_min_c=80, temp_molde_max_c=120,
+    secagem_temp_min_c=120, secagem_temp_max_c=120, secagem_tempo_min_h=2, secagem_tempo_max_h=3,
+    contracao_paralela_pct=0.65, contracao_normal_pct=0.70,
+    hdt_1_8mpa_c=122, hdt_0_45mpa_c=134,
+    fonte_url="https://solutions.covestro.com/pt/products/makrolon/makrolon-2407_000000000086286874",
+    fonte_tipo="Datasheet do fabricante (Covestro)",
+    observacoes="Contração em placa 60x60x2 mm a 500 bar. Faixa prática geral 0,5-0,7%. Tg 143°C. Edição ISO de 2017 listava molde 70-110°C e secagem 4 h.")
+
+add(id="PP-BRASKEM-H503", familia="PP", fabricante="Braskem", grade="H 503", carga=None,
+    densidade_g_cm3=0.905, mfr_g_10min=3.5, mvr_condicao="230°C/2.16 kg (ASTM D1238)",
+    fonte_url="https://polydisteurope.com/assets/uploads/files/H503.pdf",
+    fonte_tipo="Datasheet Braskem (revisão 12, ago/2012, via distribuidor)",
+    observacoes="Homopolímero de baixo MFR (extrusão de ráfia, fibras e injeção de peças espessas). O datasheet não traz temperaturas de processamento. Módulo flexural 1,4 GPa, tensão de escoamento 35 MPa. Para injeção de paredes finas considerar graus de MFR maior (ex.: H 301, HP 550R); não consultados.")
+
+
+# ===================== LOTE 2 =====================
+add(id="POM-DUPONT-DELRIN-500P-NC010", familia="POM", fabricante="DuPont", grade="Delrin 500P NC010", carga=None,
+    densidade_g_cm3=1.42, mfr_g_10min=15, mvr_cm3_10min=13, mvr_condicao="190°C/2.16 kg",
+    temp_fusao_c=178, temp_fundido_min_c=210, temp_fundido_max_c=220, temp_fundido_rec_c=215,
+    temp_molde_min_c=80, temp_molde_max_c=100, temp_molde_rec_c=90,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4,
+    densidade_fundido_g_cm3=1.19, condutividade_fundido_w_m_k=0.24,
+    fonte_url="https://Protolabs.com/media/1022598/delrin-500p_nc010.pdf",
+    fonte_tipo="Datasheet UL Prospector (DuPont)",
+    observacoes="POM homopolímero. Secagem recomendada (desumidificador). Temperatura de recozimento 160°C, Vicat B50 155°C. Contração e HDT não constavam no trecho consultado.")
+
+add(id="PA66-DUPONT-ZYTEL-101L-NC010", familia="PA66", fabricante="DuPont", grade="Zytel 101L NC010", carga=None,
+    densidade_g_cm3=1.14, temp_fusao_c=262, temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=290,
+    temp_molde_min_c=50, temp_molde_max_c=90, temp_molde_rec_c=70,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4,
+    densidade_fundido_g_cm3=0.970, calor_especifico_fundido_j_kg_c=2790, condutividade_fundido_w_m_k=0.16, temp_extracao_c=190,
+    fonte_url="https://Protolabs.com/media/tcebrq5j/zytel-101l.pdf",
+    fonte_tipo="Datasheet UL Prospector (DuPont); calor específico em SI vem do datasheet do Zytel 101F",
+    observacoes="Tm, temperatura de extração, condutividade e calor específico foram convertidos de °F e unidades inglesas (504°F, 374°F, 1,1 Btu·in/h/ft²/°F, 0,667 Btu/lb/°F). Contração não constava no trecho consultado.")
+
+add(id="PA66-GF33-DUPONT-ZYTEL-70G33L-NC010", familia="PA66", fabricante="DuPont", grade="Zytel 70G33L NC010", carga="GF33",
+    temp_fusao_c=262, temp_fundido_min_c=285, temp_fundido_max_c=305, temp_fundido_rec_c=295,
+    temp_molde_min_c=70, temp_molde_max_c=120, temp_molde_rec_c=100,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4, umidade_max_pct=0.2,
+    calor_especifico_fundido_j_kg_c=2210, condutividade_fundido_w_m_k=0.22,
+    fonte_url="https://www.comsol.de/forum/thread/attachment/484732/zytel70g33lnc010-4050400.pdf",
+    fonte_tipo="Datasheet DuPont (cópia hospedada em fórum COMSOL, edição antiga)",
+    observacoes="PA66 com 33% de fibra de vidro, é a alternativa DuPont mais próxima de GF30/GF35. Umidade de processamento < 0,2%. Densidade e contração não constavam no trecho consultado.")
+
+add(id="PA66-GF33-DUPONT-ZYTEL-70G33HS1L-NC010", familia="PA66", fabricante="DuPont", grade="Zytel 70G33HS1L NC010", carga="GF33",
+    temp_fusao_c=262, temp_fundido_min_c=285, temp_fundido_max_c=305, temp_fundido_rec_c=295,
+    temp_molde_min_c=70, temp_molde_max_c=120, temp_molde_rec_c=100,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4,
+    calor_especifico_fundido_j_kg_c=2210, condutividade_fundido_w_m_k=0.22, temp_extracao_c=210,
+    fonte_url="https://www.protolabs.com/media/hxudykda/zytel-70g33hs1l.pdf",
+    fonte_tipo="Datasheet UL Prospector (DuPont); tempo de secagem do datasheet da versão BK031",
+    observacoes="Estabilizado termicamente. Tm, extração, calor específico (0,528 Btu/lb/°F) e condutividade (1,5 Btu·in/h/ft²/°F) convertidos de unidades inglesas. Densidade e contração não constavam no trecho consultado.")
+
+add(id="PA6-CELANESE-ZYTEL-7335F-NC010", familia="PA6", fabricante="Celanese", grade="Zytel 7335F NC010", carga=None,
+    temp_fusao_c=221, temp_fundido_min_c=260, temp_fundido_max_c=280, temp_fundido_rec_c=270,
+    temp_molde_min_c=50, temp_molde_max_c=90, temp_molde_rec_c=70,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4,
+    densidade_fundido_g_cm3=0.970, calor_especifico_fundido_j_kg_c=2700, condutividade_fundido_w_m_k=0.16,
+    fonte_url="https://protolabs.com/media/tqzke2yx/zytel-7335f-nc010.pdf",
+    fonte_tipo="Datasheet UL Prospector (Celanese)",
+    observacoes="A família PA6 foi inferida pela Tm de 221°C e pela série Zytel 7300; o documento consultado não declara o polímero. Conferir no datasheet oficial. Densidade e contração não constavam no trecho consultado.")
+
+add(id="PA66-GF30-DOMO-TECHNYL-A218-V30", familia="PA66", fabricante="Domo Chemicals", grade="Technyl A 218 V30", carga="GF30",
+    densidade_g_cm3=1.36,
+    fonte_url="https://ultrapolymers.com/it-CH/prodotti/2915-technyl-a-218-v30",
+    fonte_tipo="Página de distribuidor (Ultrapolymers)",
+    observacoes="Somente densidade encontrada em fonte aberta. Condições de processamento ficam atrás de login (SpecialChem, Domo). Registro incompleto.")
+
+add(id="PA66-DOMO-TECHNYL-A218", familia="PA66", fabricante="Domo Chemicals", grade="Technyl A 218", carga=None,
+    densidade_g_cm3=1.14,
+    fonte_url="https://ultrapolymers.com/de-PL/produkte/2903-technyl-a-218",
+    fonte_tipo="Página de distribuidor (Ultrapolymers)",
+    observacoes="Somente densidade encontrada em fonte aberta. Registro incompleto.")
+
+
+# ===================== LOTE 3 =====================
+add(id="POM-CELANESE-HOSTAFORM-C9021", familia="POM", fabricante="Celanese", grade="Hostaform C 9021", carga=None,
+    densidade_g_cm3=1.41, mvr_cm3_10min=8, mvr_condicao="190°C/2.16 kg", temp_fusao_c=166,
+    temp_fundido_min_c=190, temp_fundido_max_c=210, temp_fundido_rec_c=205,
+    temp_molde_min_c=80, temp_molde_max_c=120, temp_molde_rec_c=90,
+    secagem_temp_min_c=100, secagem_temp_max_c=120, secagem_tempo_min_h=3, secagem_tempo_max_h=4,
+    zona_traseira_min_c=170, zona_traseira_max_c=180, zona_media_min_c=180, zona_media_max_c=190,
+    zona_frontal_min_c=190, zona_frontal_max_c=200, bico_min_c=190, bico_max_c=210,
+    contracao_paralela_pct=2.0, contracao_normal_pct=1.9,
+    densidade_fundido_g_cm3=1.20, calor_especifico_fundido_j_kg_c=2210, condutividade_fundido_w_m_k=0.155, temp_extracao_c=140,
+    fonte_url="https://plasticker.de/docs/recybase/44158_1748333698.pdf",
+    fonte_tipo="Datasheet CAMPUS (Celanese), via plasticker.de",
+    observacoes="Mesmo polímero base do Celcon M90 (Celanese cita equivalência). Secagem normalmente não é exigida. Guia anterior (CAMPUS/Material Data Center) indica fundido 180-190°C e recozimento 130-140°C; outro documento CAMPUS lista temperatura de extração 127°C. Zona 4 = 190-210°C mapeada em bico.")
+
+add(id="POM-PTFE-CELANESE-HOSTAFORM-C9021-TF", familia="POM", fabricante="Celanese", grade="Hostaform C 9021 TF", carga="PTFE",
+    densidade_g_cm3=1.51, mvr_cm3_10min=6, mvr_condicao="190°C/2.16 kg", temp_fusao_c=166,
+    temp_fundido_min_c=190, temp_fundido_max_c=210, temp_fundido_rec_c=205,
+    temp_molde_min_c=80, temp_molde_max_c=120, temp_molde_rec_c=90,
+    secagem_temp_min_c=100, secagem_temp_max_c=120, secagem_tempo_min_h=3, secagem_tempo_max_h=4,
+    zona_traseira_min_c=170, zona_traseira_max_c=180, zona_media_min_c=180, zona_media_max_c=190,
+    zona_frontal_min_c=190, zona_frontal_max_c=200, bico_min_c=190, bico_max_c=210,
+    contracao_paralela_pct=2.0, contracao_normal_pct=1.7,
+    fonte_url="https://plasticker.de/docs/recybase/37228_1720613132.pdf",
+    fonte_tipo="Datasheet CAMPUS (Celanese), via plasticker.de",
+    observacoes="POM copolímero com PTFE (baixo atrito). Vicat 145°C. Secagem normalmente não exigida; só se houve contato com umidade.")
+
+add(id="PA6-GF30-BASF-ULTRAMID-B3WG6", familia="PA6", fabricante="BASF", grade="Ultramid B3WG6", carga="GF30",
+    mvr_cm3_10min=30, mvr_condicao="275°C/5 kg", temp_fusao_c=220,
+    temp_fundido_min_c=270, temp_fundido_max_c=290, temp_fundido_rec_c=280,
+    temp_molde_min_c=80, temp_molde_max_c=90,
+    secagem_temp_min_c=80, secagem_temp_max_c=80,
+    zona_traseira_min_c=260, zona_traseira_max_c=260, zona_media_min_c=270, zona_media_max_c=270,
+    zona_frontal_min_c=280, zona_frontal_max_c=280, bico_min_c=280, bico_max_c=280,
+    hdt_1_8mpa_c=210,
+    fonte_url="https://products-asia.basf.com/products/ultramid-b3wg6-uncolored-polyamide",
+    fonte_tipo="Página de produto BASF Ásia",
+    observacoes="Natural, estabilizado. Garganta do funil 80°C. Densidade e contração não constavam; variantes pretas do mesmo grade trazem 1,35-1,36 g/cm³ (B3WG6 BK00564: 1,36).")
+
+add(id="PA6-GF30-BASF-ULTRAMID-B3EG6-UN", familia="PA6", fabricante="BASF", grade="Ultramid B3EG6 UN", carga="GF30",
+    densidade_g_cm3=1.36, mvr_cm3_10min=35, mvr_condicao="275°C/5 kg", temp_fusao_c=220,
+    temp_fundido_min_c=270, temp_fundido_max_c=290, temp_fundido_rec_c=280,
+    temp_molde_min_c=80, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80,
+    calor_especifico_fundido_j_kg_c=2230, temp_extracao_c=160,
+    fonte_url="https://materialdatacenter.com/ms/en/Ultramid B/BASF+SE/Ultramid%C2%AE+B3EG6+UN/6da097e1/4337",
+    fonte_tipo="Material Data Center (dados BASF)",
+    observacoes="Natural. Vicat B 220°C. O datasheet de produto BASF (B3EG6, 02/2026) confirma 270-290°C, molde 80-90°C e densidade 1,36 g/cm³.")
+
+add(id="PA12-EMS-GRILAMID-L20G-NATURAL", familia="PA12", fabricante="EMS-Grivory", grade="Grilamid L 20 G natural", carga=None,
+    densidade_g_cm3=1.01, temp_fusao_c=178,
+    temp_fundido_rec_c=250, temp_molde_rec_c=40,
+    contracao_paralela_pct=0.8, contracao_normal_pct=0.8,
+    densidade_fundido_g_cm3=0.860, calor_especifico_fundido_j_kg_c=2900, condutividade_fundido_w_m_k=0.22, temp_extracao_c=140,
+    fonte_url="https://materialdatacenter.com/ms/en/Grilamid/EMS-CHEMIE/Grilamid+L+20+G+natural/930b51f8/925",
+    fonte_tipo="Material Data Center (dados EMS-Grivory)",
+    observacoes="Fundido 250°C e molde 40°C são as condições do corpo de prova ISO 294, não faixas de processo. Faixas de processo e secagem não constavam; outros grades L 20 indicam fundido 200-230°C ou 230-250°C conforme o grade.")
+
+add(id="PPS-GF40-CELANESE-FORTRON-1140L4", familia="PPS", fabricante="Celanese", grade="Fortron 1140L4", carga="GF40",
+    temp_fusao_c=280,
+    temp_fundido_min_c=330, temp_fundido_max_c=340,
+    temp_molde_min_c=140, temp_molde_max_c=160,
+    secagem_temp_min_c=130, secagem_temp_max_c=140, secagem_tempo_min_h=3, secagem_tempo_max_h=4,
+    zona_traseira_min_c=290, zona_traseira_max_c=300, zona_media_min_c=310, zona_media_max_c=320,
+    zona_frontal_min_c=330, zona_frontal_max_c=340, bico_min_c=310, bico_max_c=330,
+    calor_especifico_fundido_j_kg_c=1500,
+    fonte_url="https://Protolabs.com/media/1t4hwpu5/fortron_pps-1140l4.pdf",
+    fonte_tipo="Datasheet UL Prospector (Celanese)",
+    observacoes="Temperatura do funil 20-30°C. Tg 90°C. Molde no mínimo 140°C (guia Celanese: ao menos 135°C para máxima cristalinidade). Densidade e contração não constavam para o 1140L4; o 1140L6 (variante de fluxo maior) indica 1,65 g/cm³, 0,3/0,6%.")
+
+add(id="PET-GF30-CELANESE-RYNITE-530-NC010", familia="PET", fabricante="Celanese", grade="Rynite 530 NC010", carga="GF30",
+    densidade_g_cm3=1.56, temp_fusao_c=252,
+    temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=285,
+    temp_molde_min_c=120, temp_molde_max_c=140, temp_molde_rec_c=130,
+    secagem_temp_min_c=120, secagem_temp_max_c=120, secagem_tempo_min_h=4, secagem_tempo_max_h=6,
+    contracao_paralela_pct=0.20, contracao_normal_pct=0.80, temp_extracao_c=170,
+    fonte_url="https://WWW.PROTOLABS.COM/media/1o4l4zuy/pet-rynite-530.pdf",
+    fonte_tipo="Datasheet UL Prospector (DuPont, 2022)",
+    observacoes="Contração após 48 h a 80°C: 0,10% (fluxo) e 0,45% (transversal). Vicat B50 230°C. Molde alto é necessário para boa cristalização e menor empenamento.")
+
+add(id="PET-GF30-CELANESE-RYNITE-530HTE-NC010", familia="PET", fabricante="Celanese", grade="Rynite 530HTE NC010", carga="GF30",
+    densidade_g_cm3=1.56, mfr_g_10min=9, mvr_condicao="280°C/2.16 kg (MFR)",
+    temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=285,
+    temp_molde_min_c=120, temp_molde_max_c=140, temp_molde_rec_c=140,
+    secagem_temp_min_c=120, secagem_temp_max_c=120, secagem_tempo_min_h=4, secagem_tempo_max_h=6,
+    contracao_paralela_pct=0.1, contracao_normal_pct=0.6,
+    densidade_fundido_g_cm3=1.36, calor_especifico_fundido_j_kg_c=1500, condutividade_fundido_w_m_k=0.29, temp_extracao_c=170,
+    fonte_url="https://plasticker.de/docs/recybase/943_1761037086.pdf",
+    fonte_tipo="Datasheet CAMPUS (Celanese), via plasticker.de",
+    observacoes="Grau de alta temperatura/dielétrico. Com molde mais frio, o empenamento e a contração iniciais são maiores.")
+
+add(id="PET-GF30-FR-CELANESE-RYNITE-FR530-NC010", familia="PET", fabricante="Celanese", grade="Rynite FR530 NC010", carga="GF30",
+    densidade_g_cm3=1.68, temp_fusao_c=252,
+    temp_fundido_min_c=270, temp_fundido_max_c=290, temp_fundido_rec_c=280,
+    temp_molde_min_c=100, temp_molde_max_c=120, temp_molde_rec_c=110,
+    secagem_temp_min_c=120, secagem_temp_max_c=120, secagem_tempo_min_h=4, secagem_tempo_max_h=6,
+    calor_especifico_fundido_j_kg_c=1720, condutividade_fundido_w_m_k=0.24, temp_extracao_c=170,
+    fonte_url="https://protolabs.com/media/zn4eig30/rynite-fr530-nc010.pdf",
+    fonte_tipo="Datasheet UL Prospector (Celanese)",
+    observacoes="Retardante de chama. Tg 90°C, Vicat B50 220°C. Contração não constava no trecho consultado.")
+
+add(id="ASA-INEOS-LURAN-S-778T", familia="ASA", fabricante="INEOS Styrolution", grade="Luran S 778T", carga=None,
+    densidade_g_cm3=1.07, mvr_cm3_10min=5, mvr_condicao="220°C/10 kg",
+    temp_fundido_min_c=240, temp_fundido_max_c=280, temp_fundido_rec_c=250,
+    temp_molde_min_c=40, temp_molde_max_c=80, temp_molde_rec_c=60,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4,
+    contracao_paralela_pct=0.5, contracao_normal_pct=0.9,
+    densidade_fundido_g_cm3=0.96, calor_especifico_fundido_j_kg_c=2000, condutividade_fundido_w_m_k=0.16, temp_extracao_c=95,
+    fonte_url="https://rolec.com/fileadmin/Media/bb/02/ASA%20Luran-en.pdf",
+    fonte_tipo="Datasheet CAMPUS (INEOS Styrolution)",
+    observacoes="Calor específico: 2000 J/kg/K nesta fonte; Material Data Center lista 2160. Vicat 104°C.")
+
+add(id="PC-ABS-COVESTRO-BAYBLEND-T65-XF", familia="PC+ABS", fabricante="Covestro", grade="Bayblend T65 XF", carga=None,
+    densidade_g_cm3=1.13, mvr_cm3_10min=18, mvr_condicao="260°C/5 kg",
+    temp_fundido_min_c=240, temp_fundido_max_c=270, temp_fundido_rec_c=260,
+    temp_molde_min_c=70, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=95, secagem_temp_max_c=110, secagem_tempo_min_h=4, secagem_tempo_max_h=4,
+    zona_traseira_min_c=220, zona_traseira_max_c=230, zona_media_min_c=225, zona_media_max_c=235,
+    zona_frontal_min_c=230, zona_frontal_max_c=240, bico_min_c=255, bico_max_c=265,
+    contracao_faixa_min_pct=0.5, contracao_faixa_max_pct=0.7,
+    hdt_1_8mpa_c=102, hdt_0_45mpa_c=122,
+    fonte_url="https://protolabs.com/media/k3ej31tv/bayblend-t65-xf.pdf",
+    fonte_tipo="Datasheet UL Prospector/Covestro",
+    observacoes="Contração por ISO 2577, faixa única 0,5-0,7%. Vicat B/120 = 120°C. Viscosidade do fundido 200 Pa·s (260°C, 1000 s⁻¹). Secagem em desumidificador.")
+
+add(id="PMMA-ROHM-PLEXIGLAS-7N", familia="PMMA", fabricante="Röhm", grade="Plexiglas 7N", carga=None,
+    densidade_g_cm3=1.19, mvr_cm3_10min=6, mvr_condicao="230°C (carga não exibida na fonte)",
+    temp_fundido_min_c=220, temp_fundido_max_c=260,
+    temp_molde_min_c=60, temp_molde_max_c=90,
+    densidade_fundido_g_cm3=1.06, calor_especifico_fundido_j_kg_c=2440,
+    fonte_url="https://www.materialdatacenter.com/ms/en/Plexiglas/R%C3%B6hm+GmbH/PLEXIGLAS®+7N/a7aaeaa5/2125",
+    fonte_tipo="Material Data Center (dados Röhm)",
+    observacoes="Condições do corpo de prova ISO 294: fundido 243°C, molde 63°C, velocidade de injeção 195 mm/s. Secagem: a fonte informa temperatura máxima mas o valor não constava no trecho consultado. Higroscópico: secar antes de moldar.")
+
+add(id="PS-INEOS-STYROLUTION-PS-158N", familia="PS", fabricante="INEOS Styrolution", grade="Styrolution PS 158N", carga=None,
+    densidade_g_cm3=1.04, mvr_cm3_10min=3, mvr_condicao="200°C/5 kg",
+    temp_fundido_min_c=180, temp_fundido_max_c=280, temp_fundido_rec_c=230,
+    temp_molde_min_c=10, temp_molde_max_c=60, temp_molde_rec_c=40,
+    fonte_url="https://materialdatacenter.com/ms/pt/Styrolution PS/INEOS+Styrolution/Styrolution®+PS+158N/52572c10/6541",
+    fonte_tipo="Material Data Center (dados INEOS Styrolution) + distribuidor (densidade)",
+    observacoes="Densidade vem de página de distribuidor para o PS 158N/L (variante com lubrificante); o PS 158K traz 1,048 g/cm³. Para extrusão, fundido não deve passar de 240°C.")
+
+add(id="PP-LYONDELLBASELL-MOPLEN-HP500N", familia="PP", fabricante="LyondellBasell", grade="Moplen HP500N", carga=None,
+    densidade_g_cm3=0.90, mfr_g_10min=12, mvr_condicao="230°C/2.16 kg",
+    hdt_0_45mpa_c=95,
+    fonte_url="https://www.lyondellbasell.com/en/polymers/p/Moplen-HP500N-B/88ee335f-45c0-4e3e-aa8d-c2660543ba2d",
+    fonte_tipo="Datasheet do fabricante (LyondellBasell, grade HP500N B, Ásia-Pacífico)",
+    observacoes="Homopolímero de uso geral em injeção. Os dados públicos do fabricante não trazem temperaturas de processo nem contração. O grade HP500N B (Ásia-Pacífico) é a versão com página aberta; a ficha da HP500N foi vista em cópia de terceiros.")
+
+add(id="PP-LYONDELLBASELL-MOPLEN-HP500V", familia="PP", fabricante="LyondellBasell", grade="Moplen HP500V", carga=None,
+    densidade_g_cm3=0.91, mfr_g_10min=120, mvr_condicao="230°C/2.16 kg",
+    hdt_0_45mpa_c=80,
+    fonte_url="https://www.lyondellbasell.com/en/polymers/p/Moplen-HP500V/646db5f6-10ec-4142-8ee5-5ff42c7577e1",
+    fonte_tipo="Datasheet do fabricante (LyondellBasell)",
+    observacoes="Homopolímero de altíssima fluidez para paredes finas e longos percursos de fluxo. Sem temperaturas de processo nem contração no dado público.")
+
+add(id="PA66-GF35-BASF-ULTRAMID-A3EG7", familia="PA66", fabricante="BASF", grade="Ultramid A3EG7", carga="GF35",
+    temp_fusao_c=260, temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=290,
+    temp_molde_min_c=80, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80,
+    contracao_paralela_pct=0.48, contracao_normal_pct=1.00,
+    fonte_url="https://download.basf.com/p1/8a8082587fd4b608017fd656f0863da4/en/ULTRAMID%25C2%25AE_A3EG7",
+    fonte_tipo="Product Information BASF (02/2026)",
+    observacoes="Contração restrita 0,49%. Escoamento em espiral d=2,0 mm: 40 cm. Temperatura de serviço de curta duração 240°C. Densidade, MVR e tempo de secagem não constavam.")
+
+add(id="PA66-GF30-BASF-ULTRAMID-A3EG6", familia="PA66", fabricante="BASF", grade="Ultramid A3EG6", carga="GF30",
+    mvr_cm3_10min=30, mvr_condicao="275°C/5 kg",
+    temp_fundido_min_c=280, temp_fundido_max_c=300, temp_fundido_rec_c=290,
+    temp_molde_min_c=80, temp_molde_max_c=90, temp_molde_rec_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80,
+    fonte_url="https://www.materialdatacenter.com/ms/zh/Ultramid A/BASF/Ultramid®+A3EG6/b2ada2dd/371",
+    fonte_tipo="Material Data Center (dados BASF)",
+    observacoes="Natural e padrão (o grade PA66-GF30 mais comum da BASF para este perfil). Densidade, contração e tempo de secagem não constavam no trecho consultado.")
+
+add(id="PEEK-VICTREX-450G", familia="PEEK", fabricante="Victrex", grade="Victrex PEEK 450G", carga=None,
+    densidade_g_cm3=1.30,
+    temp_molde_min_c=170, temp_molde_max_c=200,
+    secagem_temp_min_c=120, secagem_temp_max_c=150, secagem_tempo_min_h=3, secagem_tempo_max_h=5, umidade_max_pct=0.02,
+    bico_min_c=375, bico_max_c=375,
+    contracao_paralela_pct=1.0, hdt_1_8mpa_c=152,
+    fonte_url="https://www.victrex.com/en/downloads/datasheets/victrex-peek-450g",
+    fonte_tipo="Datasheet do fabricante (Victrex); valores numéricos de moldagem da revisão de jul/2014 (cópia em moodle.units.it)",
+    observacoes="Secagem: 150°C/3 h ou 120°C/5 h. Perfil de cilindro do doc. 2014: 355/360/365/370/375°C (bico = 375°C). Temperatura do funil ≤ 100°C. Contração 1,0% ao longo do fluxo (bico 375°C, molde 180°C); serve só para comparação entre materiais. HDT 152°C (moldado). Viscosidade 350 Pa·s a 400°C. A página atual (mar/2026) tem a mesma estrutura mas os números não vieram na extração.")
+
+add(id="PEEK-GF20-VICTREX-450GL20", familia="PEEK", fabricante="Victrex", grade="Victrex PEEK 450GL20", carga="GF20",
+    densidade_g_cm3=1.43, temp_fusao_c=343,
+    temp_molde_min_c=170, temp_molde_max_c=200,
+    secagem_temp_min_c=120, secagem_temp_max_c=150, secagem_tempo_min_h=3, secagem_tempo_max_h=5,
+    zona_traseira_min_c=360, zona_traseira_max_c=360, zona_media_min_c=365, zona_media_max_c=370,
+    zona_frontal_min_c=375, zona_frontal_max_c=375, bico_min_c=380, bico_max_c=380,
+    fonte_url="https://www.victrex.com/~/media/fc086a419d8e4d278edbbd1faddce8a5.pdf",
+    fonte_tipo="Datasheet do fabricante (Victrex, 2025)",
+    observacoes="Funil < 100°C. Viscosidade 475 Pa·s a 400°C. Contração e HDT existem na ficha mas não vieram na extração. Moldar com molde a 190°C e fundido a 380°C no ensaio de espiral.")
+
+add(id="PEI-SABIC-ULTEM-1000", familia="PEI", fabricante="SABIC", grade="Ultem 1000", carga=None,
+    mfr_g_10min=9, mvr_condicao="337°C/6.6 kgf (ASTM D1238)",
+    temp_fundido_min_c=350, temp_fundido_max_c=400,
+    temp_molde_min_c=135, temp_molde_max_c=165,
+    secagem_temp_min_c=150, secagem_temp_max_c=150, secagem_tempo_min_h=4, secagem_tempo_max_h=6,
+    zona_traseira_min_c=330, zona_traseira_max_c=400, zona_media_min_c=340, zona_media_max_c=400,
+    zona_frontal_min_c=345, zona_frontal_max_c=400, bico_min_c=345, bico_max_c=400,
+    contracao_faixa_min_pct=0.5, contracao_faixa_max_pct=0.7,
+    fonte_url="https://Protolabs.com/media/1020056/ultem-resin_1000_americas_technical_data_sheet.pdf",
+    fonte_tipo="Datasheet SABIC (Americas, 2020)",
+    observacoes="Amorfo, Tg 217°C. Contração em fluxo, 3,2 mm, método SABIC. Tempo de secagem cumulativo máximo 24 h. Faixas de cilindro muito largas no datasheet: ajustar na máquina. Densidade não constava.")
+
+add(id="TPU-BASF-ELASTOLLAN-1185A-W", familia="TPU", fabricante="BASF", grade="Elastollan 1185 A W", carga=None,
+    densidade_g_cm3=1.16, temp_fundido_rec_c=210, temp_molde_min_c=25, temp_molde_max_c=40,
+    fonte_url="https://materialdatacenter.com/ms/en/Elastollan/BASF+Polyurethanes+GmbH/Elastollan®+1185+A+W/612b15e2/906",
+    fonte_tipo="Material Data Center (dados BASF Polyurethanes)",
+    observacoes="TPU poliéter com plastificante. Tg -48°C. Ensaio ISO 294: fundido 210°C, molde 60°C. TPU é higroscópico e precisa de secagem; condições não constavam neste grade.")
+
+add(id="TPU-BASF-ELASTOLLAN-1185A-FHF", familia="TPU", fabricante="BASF", grade="Elastollan 1185 A FHF", carga=None,
+    densidade_g_cm3=1.23, temp_fundido_rec_c=210, temp_molde_min_c=25, temp_molde_max_c=40,
+    secagem_temp_min_c=80, secagem_temp_max_c=90, secagem_tempo_min_h=2, secagem_tempo_max_h=3,
+    fonte_url="https://materialdatacenter.com/ms/en/Elastollan/BASF+Polyurethanes+GmbH/Elastollan®+1185+A+FHF/28c83516/906",
+    fonte_tipo="Material Data Center (dados BASF Polyurethanes)",
+    observacoes="TPU poliéter, sem halogênio e retardante de chama (uso em cabos e plugues). Pré-secagem de 2-3 h a 80-90°C em desumidificador (ou 100-110°C em estufa com circulação). Tg -44°C.")
+
+add(id="LCP-GF30-CELANESE-VECTRA-E130I", familia="LCP", fabricante="Celanese", grade="Vectra E130i", carga="GF30",
+    densidade_g_cm3=1.61, temp_fusao_c=335,
+    temp_fundido_min_c=335, temp_fundido_max_c=345,
+    temp_molde_min_c=80, temp_molde_max_c=120,
+    secagem_temp_min_c=150, secagem_temp_max_c=170, secagem_tempo_min_h=4, secagem_tempo_max_h=6,
+    zona_traseira_min_c=315, zona_traseira_max_c=325, zona_media_min_c=320, zona_media_max_c=330,
+    zona_frontal_min_c=325, zona_frontal_max_c=335, bico_min_c=335, bico_max_c=345,
+    fonte_url="https://protolabs.com/media/30lixavj/vectra-e130i.pdf",
+    fonte_tipo="Datasheet UL Prospector (Celanese, dez/2023)",
+    observacoes="Todas as temperaturas convertidas de °F. Densidade a granel 0,71 g/cm³. Zona 4 = 330-340°C e funil 20-30°C, alimentação 60-80°C. Contração não constava no trecho consultado. Viscosidade cai rápido com o cisalhamento: aumentar a velocidade de injeção ajuda a encher.")
+
+add(id="SAN-INEOS-LURAN-358N", familia="SAN", fabricante="INEOS Styrolution", grade="Luran 358N", carga=None,
+    densidade_g_cm3=1.08, mvr_cm3_10min=22, mvr_condicao="220°C (carga não exibida na fonte; Luran SAN usa 10 kg)",
+    temp_fundido_min_c=220, temp_fundido_max_c=260,
+    temp_molde_min_c=40, temp_molde_max_c=80,
+    secagem_temp_min_c=80, secagem_temp_max_c=80, secagem_tempo_min_h=2, secagem_tempo_max_h=4,
+    condutividade_fundido_w_m_k=0.17,
+    fonte_url="https://materialdatacenter.com/ms/en/Luran/INEOS+Styrolution/Luran®+358N/238afc86/345",
+    fonte_tipo="Material Data Center (dados INEOS Styrolution)",
+    observacoes="Grade SAN de fácil fluxo para paredes finas. A carga do MVR é inferência pela família Luran; confirmar no datasheet.")
+
+add(id="PA46-ENVALIOR-STANYL-TW341", familia="PA46", fabricante="Envalior (ex-DSM)", grade="Stanyl TW341", carga=None,
+    densidade_g_cm3=1.18, temp_fusao_c=295,
+    temp_fundido_min_c=300, temp_fundido_max_c=320,
+    temp_molde_min_c=80, temp_molde_max_c=120,
+    zona_traseira_min_c=280, zona_traseira_max_c=320, zona_media_min_c=300, zona_media_max_c=320,
+    zona_frontal_min_c=300, zona_frontal_max_c=320, bico_min_c=280, bico_max_c=300,
+    contracao_paralela_pct=2.0, contracao_normal_pct=2.0,
+    fonte_url="https://protolabs.com/media/zkljkqyq/stanyl-tw341.pdf",
+    fonte_tipo="Datasheet IDES/Protolabs (2011) + Envalior Property Data (2026)",
+    observacoes="Perfis de cilindro do datasheet de 2011. Contração 2% (seco) em ambas as direções, método semelhante a ISO 294-4. Sem condições de secagem na extração.")
+
+add(id="PPE-PP-SABIC-NORYL-PPX7115", familia="PPE+PP", fabricante="SABIC", grade="Noryl PPX7115 (Europa)", carga=None,
+    densidade_g_cm3=0.99, mvr_cm3_10min=12, mvr_condicao="260°C (carga não exibida na fonte)",
+    temp_fundido_min_c=260, temp_fundido_max_c=290,
+    temp_molde_min_c=40, temp_molde_max_c=60,
+    secagem_temp_min_c=60, secagem_temp_max_c=65, secagem_tempo_min_h=2, secagem_tempo_max_h=4, umidade_max_pct=0.02,
+    calor_especifico_fundido_j_kg_c=2300, condutividade_fundido_w_m_k=0.21, temp_extracao_c=142,
+    fonte_url="https://materialdatacenter.com/ms/en/Noryl PPX/Saudi+Basic+Industries+Corporation+%28SABIC%29/NORYL+PPX%E2%84%A2++Resin+PPX7115+-+Europe/db70f7fc/7615",
+    fonte_tipo="Material Data Center (dados SABIC)",
+    observacoes="Temperatura de alimentação 60-80°C. Umidade de processamento ≤ 0,02%.")
+
+add(id="PPE-PP-GF30-SABIC-NORYL-PPX630", familia="PPE+PP", fabricante="SABIC", grade="Noryl PPX630 (Ásia)", carga="GF30",
+    densidade_g_cm3=1.19, mfr_g_10min=2.6, mvr_condicao="260°C/5 kgf (ASTM D1238)",
+    temp_fundido_min_c=260, temp_fundido_max_c=300,
+    temp_molde_min_c=40, temp_molde_max_c=65,
+    secagem_temp_min_c=65, secagem_temp_max_c=75, secagem_tempo_min_h=2, secagem_tempo_max_h=4, umidade_max_pct=0.02,
+    fonte_url="https://materialdatacenter.com/ms/en/tradenames/Noryl PPX/Saudi+Basic+Industries+Corporation+%28SABIC%29/NORYL+PPX™++Resin+PPX630+-+Asia/0ce4dfa5/7615",
+    fonte_tipo="Material Data Center (dados SABIC) + plabase (carga do MFR)",
+    observacoes="Vicat B/50 162°C. HDT 0,45 MPa 155°C e 1,82 MPa 133°C (plabase, grade Noryl PPX de mesma densidade e MFR).")
+
+add(id="PBT-GF30-CELANESE-CELANEX-733LD", familia="PBT", fabricante="Celanese", grade="Celanex 733LD", carga="GF30",
+    densidade_g_cm3=1.43,
+    temp_fundido_min_c=235, temp_fundido_max_c=265,
+    temp_molde_min_c=65, temp_molde_max_c=93,
+    zona_traseira_min_c=230, zona_traseira_max_c=250, zona_media_min_c=235, zona_media_max_c=255,
+    zona_frontal_min_c=240, zona_frontal_max_c=260, bico_min_c=250, bico_max_c=265,
+    contracao_paralela_pct=0.2, contracao_normal_pct=0.6,
+    fonte_url="https://www.materialdatacenter.com/ms/en/Celanex/Celanese/CELANEX+733LD/9d3a3fe6/2424",
+    fonte_tipo="Material Data Center (dados Celanese)",
+    observacoes="Secagem não constava neste grade; os Celanex em geral pedem umidade ≤ 0,02%, secador a ar seco 120-140°C por 2-4 h (documento do Celanex 2302).")
+
+add(id="PBT-PET-GF30-CELANESE-CELANEX-2302-GV1-30LT", familia="PBT+PET", fabricante="Celanese", grade="Celanex 2302 GV1/30LT ED4868 Black", carga="GF30",
+    temp_fundido_min_c=255, temp_fundido_max_c=275,
+    temp_molde_min_c=80, temp_molde_max_c=100,
+    secagem_temp_min_c=120, secagem_temp_max_c=140, secagem_tempo_min_h=2, secagem_tempo_max_h=4, umidade_max_pct=0.02,
+    fonte_url="https://www.materialdatacenter.com/ms/de/Celanex/Celanese/CELANEX®+2302+GV130LT+ED4868+Black/162aaea1/2424",
+    fonte_tipo="Material Data Center (dados Celanese)",
+    observacoes="Secador a ar seco com ponto de orvalho < -30°C; se o tempo no secador for longo, reduzir para 100°C. Molde pode ser 60-100°C, mas ≥ 80°C melhora aparência e estabilidade dimensional. Celanese recomenda só câmara quente aquecida externamente. Densidade e contração não constavam.")
+
+add(id="POM-CELANESE-HOSTAFORM-C9021-G", familia="POM", fabricante="Celanese", grade="Hostaform C 9021 G", carga=None,
+    densidade_g_cm3=1.34, mvr_cm3_10min=5.5, mvr_condicao="190°C/2.16 kg", temp_fusao_c=166,
+    contracao_paralela_pct=2.3, contracao_normal_pct=1.8,
+    fonte_url="https://www.materialdatacenter.com/ms/en/Hostaform/Celanese/HOSTAFORM®+C+9021+G/fcd4023e/2434",
+    fonte_tipo="Material Data Center (dados Celanese)",
+    observacoes="Variante 'G' do C 9021, de menor densidade que o padrão; a natureza da modificação não constava no trecho consultado. Sem dados de processamento na extração. Registro incompleto.")
+
+CAMPOS = ["id","familia","fabricante","grade","carga",
+ "densidade_g_cm3","mfr_g_10min","mvr_cm3_10min","mvr_condicao",
+ "temp_fusao_c","temp_fundido_min_c","temp_fundido_max_c","temp_fundido_rec_c",
+ "temp_molde_min_c","temp_molde_max_c","temp_molde_rec_c",
+ "secagem_temp_min_c","secagem_temp_max_c","secagem_tempo_min_h","secagem_tempo_max_h","umidade_max_pct",
+ "zona_traseira_min_c","zona_traseira_max_c","zona_media_min_c","zona_media_max_c",
+ "zona_frontal_min_c","zona_frontal_max_c","bico_min_c","bico_max_c",
+ "contra_pressao_max_mpa","velocidade_injecao",
+ "contracao_paralela_pct","contracao_normal_pct","contracao_faixa_min_pct","contracao_faixa_max_pct",
+ "hdt_1_8mpa_c","hdt_0_45mpa_c",
+ "densidade_fundido_g_cm3","calor_especifico_fundido_j_kg_c","condutividade_fundido_w_m_k",
+ "temp_extracao_c","temp_fluxo_c",
+ "fonte_url","fonte_tipo","data_consulta","observacoes"]
+
+# campos obrigatórios para cálculo -> lista de faltantes por registro
+CRIT = ["densidade_g_cm3","temp_fundido_min_c","temp_molde_min_c","secagem_temp_min_c","contracao_paralela_pct"]
+CAMPOS_RESERVA = ["viscosidade_cross_wlf","pvt","calor_especifico_curva","condutividade_curva"]
+SEM_FALTANTE = ("fonte_url","fonte_tipo","data_consulta","observacoes","carga","mvr_condicao",
+                "contracao_faixa_min_pct","contracao_faixa_max_pct")
+
+rows = []
+for m in M:
+    r = {c: m.get(c) for c in CAMPOS}
+    r["data_consulta"] = DATA_CONSULTA
+    faltantes = [c for c in CAMPOS if c not in SEM_FALTANTE and r[c] is None]
+    r["campos_faltantes"] = ";".join(faltantes)
+    r["cross_wlf_disponivel"] = False
+    r["pvt_disponivel"] = False
+    rows.append(r)
+
+CAMPOS_OUT = CAMPOS + ["campos_faltantes", "cross_wlf_disponivel", "pvt_disponivel"]
+
+
+def versao_do_conteudo(linhas):
+    """Versão estável: muda só quando algum dado muda."""
+    blob = json.dumps(linhas, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return "v" + hashlib.sha1(blob).hexdigest()[:10]
+
+
+def main():
+    raiz = Path(__file__).resolve().parent.parent
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", default=str(raiz / "app/src/main/assets/materiais.json"))
+    ap.add_argument("--csv", default=str(raiz / "dados/saida/materiais.csv"))
+    args = ap.parse_args()
+
+    ids = [r["id"] for r in rows]
+    repetidos = sorted({i for i in ids if ids.count(i) > 1})
+    if repetidos:
+        sys.exit(f"IDs repetidos: {repetidos}")
+
+    destino_json, destino_csv = Path(args.json), Path(args.csv)
+    destino_json.parent.mkdir(parents=True, exist_ok=True)
+    destino_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(destino_csv, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=CAMPOS_OUT, delimiter=";")
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: ("" if v is None else v) for k, v in r.items()})
+
+    banco = {"versao": versao_do_conteudo(rows), "data_consulta": DATA_CONSULTA,
+             "total": len(rows), "materiais": rows}
+    with open(destino_json, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(banco, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+    print(f"{len(rows)} materiais, versão {banco['versao']}")
+    print(f"  JSON: {destino_json}")
+    print(f"  CSV : {destino_csv}")
+
+
+
+if __name__ == "__main__":
+    main()
